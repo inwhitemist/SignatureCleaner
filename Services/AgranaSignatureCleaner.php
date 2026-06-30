@@ -22,9 +22,10 @@ class AgranaSignatureCleaner
         return preg_match('/<\s*(html|body|div|table|p|br|span|a|img)\b/i', $body) === 1;
     }
 
-    private function cleanHtml($html)
+    private function cleanHtml($html, &$signatureRemoved = null)
     {
         $original = $html;
+        $signatureRemoved = false;
 
         $previous = libxml_use_internal_errors(true);
 
@@ -45,8 +46,9 @@ class AgranaSignatureCleaner
         $xpath = new \DOMXPath($dom);
 
         $signatureNodes = $xpath->query('//*[@id="Signature" or @id="signature"]');
+        $nodesToRemove = [];
 
-        foreach ($tables as $table) {
+        foreach ($signatureNodes as $table) {
             $text = $this->normalizeText($table->textContent);
 
             if ($this->isAgranaSignatureText($text)) {
@@ -81,6 +83,10 @@ class AgranaSignatureCleaner
                     $nodesToRemove[] = $bannerContainer;
                 }
             }
+        }
+
+        if (!empty($nodesToRemove)) {
+            $signatureRemoved = true;
         }
 
         $this->removeNodes($nodesToRemove);
@@ -143,13 +149,17 @@ class AgranaSignatureCleaner
         return $filtered;
     }
 
-    private function cleanHtmlFallback($html)
+    private function cleanHtmlFallback($html, &$signatureRemoved = null)
     {
+        $signatureRemoved = false;
+        $originalHtml = $html;
         $pattern = '/<table\b[^>]*>(?:(?!<\/table>).)*AGRANA Fruit Moscow region LLC(?:(?!<\/table>).)*<\/table>/isu';
         $html = preg_replace($pattern, '', $html);
 
         $bannerPattern = '/<p\b[^>]*>.*?Agrana Fruit in Fashion Banner.*?<\/p>/isu';
         $html = preg_replace($bannerPattern, '', $html);
+
+        $signatureRemoved = $html !== $originalHtml;
 
         return trim($html);
     }
@@ -389,32 +399,33 @@ class AgranaSignatureCleaner
     }
 
     public function cleanWithResult($body)
-{
-    $result = [
-        'body' => $body,
-        'signature_removed' => false,
-    ];
+    {
+        $result = [
+            'body' => $body,
+            'signature_removed' => false,
+        ];
 
-    if (!is_string($body) || trim($body) === '') {
-        return $result;
-    }
+        if (!is_string($body) || trim($body) === '') {
+            return $result;
+        }
 
-    if (!$this->looksLikeHtml($body)) {
-        $cleaned = $this->cleanPlainText($body);
+        if (!$this->looksLikeHtml($body)) {
+            $cleaned = $this->cleanPlainText($body);
+
+            return [
+                'body' => $cleaned,
+                'signature_removed' => $cleaned !== $body,
+            ];
+        }
+
+        $signatureRemoved = false;
+        $cleaned = $this->cleanHtml($body, $signatureRemoved);
 
         return [
             'body' => $cleaned,
-            'signature_removed' => $cleaned !== $body,
+            'signature_removed' => $signatureRemoved,
         ];
     }
-
-    $cleaned = $this->cleanHtml($body, $signatureRemoved);
-
-    return [
-        'body' => $cleaned,
-        'signature_removed' => $signatureRemoved,
-    ];
-}
 
     private function normalizeText($text)
     {
