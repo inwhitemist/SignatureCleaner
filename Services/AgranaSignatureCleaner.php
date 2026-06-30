@@ -31,7 +31,7 @@ class AgranaSignatureCleaner
 
         $dom = new \DOMDocument('1.0', 'UTF-8');
 
-       $wrapped = '<?xml encoding="UTF-8">' . $html;
+        $wrapped = '<?xml encoding="UTF-8">' . $html;
 
         if (!$dom->loadHTML($wrapped, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD)) {
             libxml_clear_errors();
@@ -47,6 +47,21 @@ class AgranaSignatureCleaner
 
         $signatureNodes = $xpath->query('//*[@id="Signature" or @id="signature"]');
         $nodesToRemove = [];
+
+        $replyForwardHeaders = $xpath->query('//*[@id="divRplyFwdMsg"]');
+
+        foreach ($replyForwardHeaders as $header) {
+            if (!$header instanceof \DOMElement || !$this->isOutlookReplyForwardHeaderNode($header)) {
+                continue;
+            }
+
+            $nodesToRemove[] = $header;
+
+            $separator = $this->previousElementSibling($header);
+            if ($separator instanceof \DOMElement && strtolower($separator->tagName) === 'hr') {
+                $nodesToRemove[] = $separator;
+            }
+        }
 
         foreach ($signatureNodes as $table) {
             $text = $this->normalizeText($table->textContent);
@@ -191,6 +206,12 @@ class AgranaSignatureCleaner
         $bannerPattern = '/<p\b[^>]*>.*?Agrana Fruit in Fashion Banner.*?<\/p>/isu';
         $html = preg_replace($bannerPattern, '', $html);
 
+        $replyForwardPattern = '/<hr\b[^>]*>\s*<div\b[^>]*\bid=["\']divRplyFwdMsg["\'][^>]*>.*?<\/div>\s*<\/div>/isu';
+        $html = preg_replace($replyForwardPattern, '', $html);
+
+        $replyForwardPattern = '/<div\b[^>]*\bid=["\']divRplyFwdMsg["\'][^>]*>.*?<\/div>\s*<\/div>/isu';
+        $html = preg_replace($replyForwardPattern, '', $html);
+
         $signatureRemoved = $html !== $originalHtml;
 
         return trim($html);
@@ -246,10 +267,12 @@ class AgranaSignatureCleaner
     private function cleanPlainText($text)
     {
         $normalized = str_replace("\xC2\xA0", ' ', $text);
-        $lines = preg_split('/\R/u', $normalized);
+        $withoutReplyForwardHeaders = $this->removeOutlookReplyForwardHeaderText($normalized);
+        $replyForwardHeaderRemoved = $withoutReplyForwardHeaders !== $normalized;
+        $lines = preg_split('/\R/u', $withoutReplyForwardHeaders);
 
         if (!$lines) {
-            return $text;
+            return $replyForwardHeaderRemoved ? $withoutReplyForwardHeaders : $text;
         }
 
         $companyLineIndex = null;
@@ -262,13 +285,13 @@ class AgranaSignatureCleaner
         }
 
         if ($companyLineIndex === null) {
-            return $text;
+            return $replyForwardHeaderRemoved ? $withoutReplyForwardHeaders : $text;
         }
 
         $tail = implode("\n", array_slice($lines, $companyLineIndex));
 
         if (!$this->isAgranaSignatureText($tail)) {
-            return $text;
+            return $replyForwardHeaderRemoved ? $withoutReplyForwardHeaders : $text;
         }
 
         $start = $companyLineIndex;
@@ -340,6 +363,97 @@ class AgranaSignatureCleaner
             && $this->contains($text, 'AGRANA Fruit Moscow region');
     }
 
+    private function isOutlookReplyForwardHeaderNode(\DOMElement $node)
+    {
+        $text = $this->normalizeText($node->textContent);
+
+        return preg_match('/\bFrom:\s*/iu', $text) === 1
+            && preg_match('/\bSubject:\s*/iu', $text) === 1
+            && (
+                preg_match('/\bSent:\s*/iu', $text) === 1
+                || preg_match('/\bTo:\s*/iu', $text) === 1
+            );
+    }
+
+    private function removeOutlookReplyForwardHeaderText($text)
+    {
+        $lines = preg_split('/\R/u', $text);
+
+        if (!$lines) {
+            return $text;
+        }
+
+        $remove = array_fill(0, count($lines), false);
+
+        for ($i = 0, $count = count($lines); $i < $count; $i++) {
+            if (!$this->isOutlookReplyForwardHeaderLine($lines[$i], 'From')) {
+                continue;
+            }
+
+            $seen = ['From' => true];
+            $end = null;
+
+            for ($j = $i + 1; $j < $count && $j <= $i + 8; $j++) {
+                $field = $this->outlookReplyForwardHeaderField($lines[$j]);
+
+                if ($field === null) {
+                    break;
+                }
+
+                $seen[$field] = true;
+
+                if ($field === 'Subject') {
+                    $end = $j;
+                    break;
+                }
+            }
+
+            if ($end === null || empty($seen['Subject']) || (empty($seen['Sent']) && empty($seen['To']))) {
+                continue;
+            }
+
+            while ($end + 1 < $count && trim($lines[$end + 1]) === '') {
+                $end++;
+            }
+
+            for ($j = $i; $j <= $end; $j++) {
+                $remove[$j] = true;
+            }
+
+            $i = $end;
+        }
+
+        if (!in_array(true, $remove, true)) {
+            return $text;
+        }
+
+        $kept = [];
+
+        foreach ($lines as $i => $line) {
+            if (!$remove[$i]) {
+                $kept[] = $line;
+            }
+        }
+
+        return implode("\n", $kept);
+    }
+
+    private function isOutlookReplyForwardHeaderLine($line, $field)
+    {
+        return preg_match('/^' . preg_quote($field, '/') . ':\s*\S/iu', trim($line)) === 1;
+    }
+
+    private function outlookReplyForwardHeaderField($line)
+    {
+        $line = trim($line);
+
+        if (preg_match('/^(From|Sent|To|Cc|Subject):\s*\S/iu', $line, $matches) !== 1) {
+            return null;
+        }
+
+        return ucfirst(strtolower($matches[1]));
+    }
+
     private function appendAdjacentSignatureNodes(array &$nodesToRemove, \DOMNode $signatureNode)
     {
         $next = $this->nextElementSibling($signatureNode);
@@ -363,6 +477,25 @@ class AgranaSignatureCleaner
             }
 
             $next = $next->nextSibling;
+        }
+
+        return null;
+    }
+
+    private function previousElementSibling(\DOMNode $node)
+    {
+        $previous = $node->previousSibling;
+
+        while ($previous) {
+            if ($previous instanceof \DOMElement) {
+                return $previous;
+            }
+
+            if ($previous instanceof \DOMText && trim($previous->textContent) !== '') {
+                return null;
+            }
+
+            $previous = $previous->previousSibling;
         }
 
         return null;
