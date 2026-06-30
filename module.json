@@ -1,0 +1,15 @@
+{
+  "name": "SignatureCleaner",
+  "alias": "signaturecleaner",
+  "description": "Removes corporate email signatures from incoming FreeScout tickets",
+  "version": "1.0.0",
+  "active": 0,
+  "author": "inwhitemist",
+  "requiredAppVersion": "1.8.0",
+  "providers": [
+    "Modules\\SignatureCleaner\\Providers\\SignatureCleanerServiceProvider"
+  ],
+  "files": [
+    "start.php"
+  ]
+}
