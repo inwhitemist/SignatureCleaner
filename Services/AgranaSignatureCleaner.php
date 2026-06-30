@@ -66,9 +66,10 @@ class AgranaSignatureCleaner
         foreach ($signatureNodes as $table) {
             $text = $this->normalizeText($table->textContent);
 
-            if ($this->isAgranaSignatureText($text)) {
+            if ($this->isAgranaSignatureText($text) || $this->isSmallSignatureText($text)) {
                 $nodesToRemove[] = $table;
                 $this->appendAdjacentSignatureNodes($nodesToRemove, $table);
+                $this->appendPreviousSignatureSeparator($nodesToRemove, $table);
 
                 $next = $this->nextElementSibling($table);
                 if ($next && $this->isBannerNode($next)) {
@@ -83,6 +84,17 @@ class AgranaSignatureCleaner
                     }
                 }
             }
+        }
+
+        $smallSignatureNodes = $xpath->query('//span|//p|//div');
+
+        foreach ($smallSignatureNodes as $node) {
+            if (!$node instanceof \DOMElement || !$this->isSmallSignatureHtmlNode($node)) {
+                continue;
+            }
+
+            $nodesToRemove[] = $node;
+            $this->appendPreviousSignatureSeparator($nodesToRemove, $node);
         }
 
         $tables = $xpath->query('//table');
@@ -212,6 +224,10 @@ class AgranaSignatureCleaner
         $replyForwardPattern = '/<div\b[^>]*\bid=["\']divRplyFwdMsg["\'][^>]*>.*?<\/div>\s*<\/div>/isu';
         $html = preg_replace($replyForwardPattern, '', $html);
 
+        $smallSignaturePattern = $this->smallSignatureHtmlTextPattern();
+        $html = preg_replace('/<div\b[^>]*\bid=["\']Signature["\'][^>]*>\s*(?:<hr\b[^>]*>\s*)?(?:<span\b[^>]*>\s*)?' . $smallSignaturePattern . '\s*(?:<br\s*\/?>\s*)?(?:<\/span>\s*)?<\/div>/isu', '', $html);
+        $html = preg_replace('/<(span|p|div)\b[^>]*>\s*' . $smallSignaturePattern . '\s*(?:<br\s*\/?>\s*)?<\/\1>/isu', '', $html);
+
         $signatureRemoved = $html !== $originalHtml;
 
         return trim($html);
@@ -268,11 +284,12 @@ class AgranaSignatureCleaner
     {
         $normalized = str_replace("\xC2\xA0", ' ', $text);
         $withoutReplyForwardHeaders = $this->removeOutlookReplyForwardHeaderText($normalized);
-        $replyForwardHeaderRemoved = $withoutReplyForwardHeaders !== $normalized;
-        $lines = preg_split('/\R/u', $withoutReplyForwardHeaders);
+        $withoutSmallSignature = $this->removeSmallSignatureText($withoutReplyForwardHeaders);
+        $softSignatureRemoved = $withoutSmallSignature !== $normalized;
+        $lines = preg_split('/\R/u', $withoutSmallSignature);
 
         if (!$lines) {
-            return $replyForwardHeaderRemoved ? $withoutReplyForwardHeaders : $text;
+            return $softSignatureRemoved ? $withoutSmallSignature : $text;
         }
 
         $companyLineIndex = null;
@@ -285,13 +302,13 @@ class AgranaSignatureCleaner
         }
 
         if ($companyLineIndex === null) {
-            return $replyForwardHeaderRemoved ? $withoutReplyForwardHeaders : $text;
+            return $softSignatureRemoved ? $withoutSmallSignature : $text;
         }
 
         $tail = implode("\n", array_slice($lines, $companyLineIndex));
 
         if (!$this->isAgranaSignatureText($tail)) {
-            return $replyForwardHeaderRemoved ? $withoutReplyForwardHeaders : $text;
+            return $softSignatureRemoved ? $withoutSmallSignature : $text;
         }
 
         $start = $companyLineIndex;
@@ -311,7 +328,7 @@ class AgranaSignatureCleaner
         }
 
         $before = array_slice($lines, 0, $start);
-        $cleaned = trim(implode("\n", $before));
+        $cleaned = rtrim(implode("\n", $before));
 
         return $cleaned === '' ? $text : $cleaned;
     }
@@ -338,6 +355,43 @@ class AgranaSignatureCleaner
         }
 
         return $score >= 4;
+    }
+
+    private function isSmallSignatureText($text)
+    {
+        $text = $this->normalizeText($text);
+
+        return preg_match('/^' . $this->smallSignatureTextPattern() . '$/u', $text) === 1;
+    }
+
+    private function smallSignatureTextPattern()
+    {
+        return '\p{Lu}[\p{Ll}\p{M}\'-]{1,40}\s+\p{Lu}[\p{Lu}\p{M}\'-]{1,40}\s*\|\s*[^|\r\n]{2,80}\s*\|\s*T:\s*\+?\d[\d\s().-]{5,30}';
+    }
+
+    private function smallSignatureHtmlTextPattern()
+    {
+        return '\p{Lu}[\p{Ll}\p{M}&#;\'-]{1,80}\s+\p{Lu}[\p{Lu}\p{M}&#;\'-]{1,80}\s*\|\s*[^|<]{2,100}\s*\|\s*T:\s*\+?\d[\d\s().-]{5,30}';
+    }
+
+    private function isSmallSignatureHtmlNode(\DOMElement $node)
+    {
+        if (!$this->isSmallSignatureText($node->textContent)) {
+            return false;
+        }
+
+        $tag = strtolower($node->tagName);
+        $id = $node->getAttribute('id');
+
+        if ($this->contains($id, 'signature')) {
+            return true;
+        }
+
+        if (in_array($tag, ['span', 'p'], true)) {
+            return true;
+        }
+
+        return $tag === 'div' && !$this->hasBlockElementChild($node);
     }
 
     private function isBannerNode(\DOMNode $node)
@@ -412,10 +466,6 @@ class AgranaSignatureCleaner
                 continue;
             }
 
-            while ($end + 1 < $count && trim($lines[$end + 1]) === '') {
-                $end++;
-            }
-
             for ($j = $i; $j <= $end; $j++) {
                 $remove[$j] = true;
             }
@@ -436,6 +486,32 @@ class AgranaSignatureCleaner
         }
 
         return implode("\n", $kept);
+    }
+
+    private function removeSmallSignatureText($text)
+    {
+        $lines = preg_split('/\R/u', $text);
+
+        if (!$lines) {
+            return $text;
+        }
+
+        for ($i = count($lines) - 1; $i >= 0; $i--) {
+            if (trim($lines[$i]) === '') {
+                continue;
+            }
+
+            if (!$this->isSmallSignatureText($lines[$i])) {
+                return $text;
+            }
+
+            unset($lines[$i]);
+            $cleaned = implode("\n", $lines);
+
+            return trim($cleaned) === '' ? $text : $cleaned;
+        }
+
+        return $text;
     }
 
     private function isOutlookReplyForwardHeaderLine($line, $field)
@@ -460,6 +536,15 @@ class AgranaSignatureCleaner
 
         if ($next && ($this->isDisclaimerNode($next) || $this->isBannerNode($next))) {
             $nodesToRemove[] = $next;
+        }
+    }
+
+    private function appendPreviousSignatureSeparator(array &$nodesToRemove, \DOMNode $signatureNode)
+    {
+        $separator = $this->previousElementSibling($signatureNode);
+
+        if ($separator instanceof \DOMElement && strtolower($separator->tagName) === 'hr') {
+            $nodesToRemove[] = $separator;
         }
     }
 
@@ -556,10 +641,12 @@ class AgranaSignatureCleaner
                 }
 
                 $text = trim($this->normalizeText($node->textContent));
+                $hasAttributes = $node->hasAttributes();
                 $hasImg = $node->getElementsByTagName('img')->length > 0;
                 $hasTable = $node->getElementsByTagName('table')->length > 0;
+                $hasBr = $node->getElementsByTagName('br')->length > 0;
 
-                if ($text === '' && !$hasImg && !$hasTable) {
+                if ($text === '' && !$hasAttributes && !$hasImg && !$hasTable && !$hasBr) {
                     $node->parentNode->removeChild($node);
                     $changed = true;
                 }
@@ -578,6 +665,19 @@ class AgranaSignatureCleaner
         $html .= $node->ownerDocument->saveHTML($node);
 
         return $html;
+    }
+
+    private function hasBlockElementChild(\DOMElement $node)
+    {
+        $blockTags = ['div', 'p', 'table', 'tr', 'td', 'ul', 'ol', 'li'];
+
+        foreach ($node->childNodes as $child) {
+            if ($child instanceof \DOMElement && in_array(strtolower($child->tagName), $blockTags, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function cleanWithResult($body)
