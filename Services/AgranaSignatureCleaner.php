@@ -30,13 +30,13 @@ class AgranaSignatureCleaner
 
         $dom = new \DOMDocument('1.0', 'UTF-8');
 
-        $wrapped = '<?xml encoding="UTF-8">' . $html;
+       $wrapped = '<?xml encoding="UTF-8">' . $html;
 
         if (!$dom->loadHTML($wrapped, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD)) {
             libxml_clear_errors();
             libxml_use_internal_errors($previous);
 
-            return $this->cleanHtmlFallback($original);
+            return $this->cleanHtmlFallback($html, $signatureRemoved);
         }
 
         libxml_clear_errors();
@@ -44,9 +44,7 @@ class AgranaSignatureCleaner
 
         $xpath = new \DOMXPath($dom);
 
-        $tables = $xpath->query('//table');
-
-        $nodesToRemove = [];
+        $signatureNodes = $xpath->query('//*[@id="Signature" or @id="signature"]');
 
         foreach ($tables as $table) {
             $text = $this->normalizeText($table->textContent);
@@ -100,6 +98,51 @@ class AgranaSignatureCleaner
         return trim($cleaned);
     }
 
+    private function isAgranaSignatureNode(\DOMElement $node)
+    {
+        $text = $this->normalizeText($node->textContent);
+        $html = $this->nodeHtml($node);
+        if (
+            $this->contains($text, 'Disclaimer: This message contains confidential information')
+            && $this->contains($text, 'AGRANA Fruit Moscow region')
+        ) {
+            return true;
+        }
+
+        if ($this->isAgranaSignatureText($text)) {
+            return true;
+        }
+
+        if (
+            $this->contains($html, 'C2_signature_')
+            || $this->contains($html, 'signaturelogo_default')
+            || $this->contains($html, 'af_banner_fruitinfashion')
+            || $this->contains($html, 'Agrana Fruit in Fashion Banner')
+            || $this->contains($html, 'trendblog.agrana.com')
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function filterSignatureAttachments($attachments)
+    {
+        if (!$attachments || !is_iterable($attachments)) {
+            return $attachments;
+        }
+
+        $filtered = [];
+
+        foreach ($attachments as $attachment) {
+            if (!$this->isSignatureAttachment($attachment)) {
+                $filtered[] = $attachment;
+            }
+        }
+
+        return $filtered;
+    }
+
     private function cleanHtmlFallback($html)
     {
         $pattern = '/<table\b[^>]*>(?:(?!<\/table>).)*AGRANA Fruit Moscow region LLC(?:(?!<\/table>).)*<\/table>/isu';
@@ -109,6 +152,53 @@ class AgranaSignatureCleaner
         $html = preg_replace($bannerPattern, '', $html);
 
         return trim($html);
+    }
+    private function isAgranaSignatureImage(\DOMElement $img)
+    {
+        $alt = $img->getAttribute('alt');
+        $src = $img->getAttribute('src');
+        $id = $img->getAttribute('id');
+
+        $haystack = $alt . ' ' . $src . ' ' . $id;
+
+        return $this->contains($haystack, 'Agrana Fruit in Fashion Banner')
+            || $this->contains($haystack, 'C2_signature_')
+            || $this->contains($haystack, 'signaturelogo_default')
+            || $this->contains($haystack, 'af_banner_fruitinfashion')
+            || $this->contains($haystack, 'Fruit in Fashion');
+    }
+
+    private function isSignatureAttachment($attachment)
+    {
+        $name = '';
+
+        if (is_object($attachment) && method_exists($attachment, 'getName')) {
+            $name = (string) $attachment->getName();
+        } elseif (is_object($attachment) && isset($attachment->name)) {
+            $name = (string) $attachment->name;
+        }
+
+        $id = '';
+
+        if (is_object($attachment) && isset($attachment->id)) {
+            $id = (string) $attachment->id;
+        }
+
+        $contentType = '';
+
+        if (is_object($attachment) && method_exists($attachment, 'getMimeType')) {
+            $contentType = (string) $attachment->getMimeType();
+        } elseif (is_object($attachment) && isset($attachment->content_type)) {
+            $contentType = (string) $attachment->content_type;
+        }
+
+        $haystack = $name . ' ' . $id . ' ' . $contentType;
+
+        return $this->contains($haystack, 'C2_signature_')
+            || $this->contains($haystack, 'signaturelogo_default')
+            || $this->contains($haystack, 'af_banner_fruitinfashion')
+            || $this->contains($haystack, 'fruitinfashion')
+            || $this->contains($haystack, 'signature_signaturelogo');
     }
 
     private function cleanPlainText($text)
@@ -297,6 +387,34 @@ class AgranaSignatureCleaner
 
         return $html;
     }
+
+    public function cleanWithResult($body)
+{
+    $result = [
+        'body' => $body,
+        'signature_removed' => false,
+    ];
+
+    if (!is_string($body) || trim($body) === '') {
+        return $result;
+    }
+
+    if (!$this->looksLikeHtml($body)) {
+        $cleaned = $this->cleanPlainText($body);
+
+        return [
+            'body' => $cleaned,
+            'signature_removed' => $cleaned !== $body,
+        ];
+    }
+
+    $cleaned = $this->cleanHtml($body, $signatureRemoved);
+
+    return [
+        'body' => $cleaned,
+        'signature_removed' => $signatureRemoved,
+    ];
+}
 
     private function normalizeText($text)
     {
