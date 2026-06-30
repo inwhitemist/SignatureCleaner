@@ -53,6 +53,7 @@ class AgranaSignatureCleaner
 
             if ($this->isAgranaSignatureText($text)) {
                 $nodesToRemove[] = $table;
+                $this->appendAdjacentSignatureNodes($nodesToRemove, $table);
 
                 $next = $this->nextElementSibling($table);
                 if ($next && $this->isBannerNode($next)) {
@@ -69,6 +70,19 @@ class AgranaSignatureCleaner
             }
         }
 
+        $tables = $xpath->query('//table');
+
+        foreach ($tables as $table) {
+            if (!$table instanceof \DOMElement) {
+                continue;
+            }
+
+            if ($this->isAgranaSignatureText($table->textContent)) {
+                $nodesToRemove[] = $table;
+                $this->appendAdjacentSignatureNodes($nodesToRemove, $table);
+            }
+        }
+
         $imgs = $xpath->query('//img');
 
         foreach ($imgs as $img) {
@@ -81,6 +95,21 @@ class AgranaSignatureCleaner
                 $bannerContainer = $this->closestBlock($img);
                 if ($bannerContainer) {
                     $nodesToRemove[] = $bannerContainer;
+                }
+            }
+        }
+
+        $disclaimers = $xpath->query('//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "disclaimer: this message contains confidential information")]');
+
+        foreach ($disclaimers as $disclaimer) {
+            if (!$disclaimer instanceof \DOMElement) {
+                continue;
+            }
+
+            if ($this->isDisclaimerNode($disclaimer)) {
+                $block = $this->closestBlock($disclaimer);
+                if ($block) {
+                    $nodesToRemove[] = $block;
                 }
             }
         }
@@ -155,6 +184,9 @@ class AgranaSignatureCleaner
         $originalHtml = $html;
         $pattern = '/<table\b[^>]*>(?:(?!<\/table>).)*AGRANA Fruit Moscow region LLC(?:(?!<\/table>).)*<\/table>/isu';
         $html = preg_replace($pattern, '', $html);
+
+        $disclaimerPattern = '/<p\b[^>]*>.*?Disclaimer:\s*This message contains confidential information.*?AGRANA Fruit Moscow region.*?<\/p>/isu';
+        $html = preg_replace($disclaimerPattern, '', $html);
 
         $bannerPattern = '/<p\b[^>]*>.*?Agrana Fruit in Fashion Banner.*?<\/p>/isu';
         $html = preg_replace($bannerPattern, '', $html);
@@ -300,6 +332,23 @@ class AgranaSignatureCleaner
             || $this->contains($text, 'Agrana Fruit in Fashion Banner');
     }
 
+    private function isDisclaimerNode(\DOMNode $node)
+    {
+        $text = $this->normalizeText($node->textContent);
+
+        return preg_match('/^Disclaimer:\s*This message contains confidential information/iu', $text) === 1
+            && $this->contains($text, 'AGRANA Fruit Moscow region');
+    }
+
+    private function appendAdjacentSignatureNodes(array &$nodesToRemove, \DOMNode $signatureNode)
+    {
+        $next = $this->nextElementSibling($signatureNode);
+
+        if ($next && ($this->isDisclaimerNode($next) || $this->isBannerNode($next))) {
+            $nodesToRemove[] = $next;
+        }
+    }
+
     private function nextElementSibling(\DOMNode $node)
     {
         $next = $node->nextSibling;
@@ -439,6 +488,10 @@ class AgranaSignatureCleaner
 
     private function contains($haystack, $needle)
     {
+        if (!function_exists('mb_stripos')) {
+            return stripos((string) $haystack, (string) $needle) !== false;
+        }
+
         return mb_stripos((string) $haystack, (string) $needle, 0, 'UTF-8') !== false;
     }
 }
