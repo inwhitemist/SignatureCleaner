@@ -2,7 +2,7 @@
   "name": "SignatureCleaner",
   "alias": "signaturecleaner",
   "description": "Removes corporate email signatures from incoming FreeScout tickets",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "active": 0,
   "author": "inwhitemist",
   "requiredAppVersion": "1.8.0",
