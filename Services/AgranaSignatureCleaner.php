@@ -380,12 +380,25 @@ class AgranaSignatureCleaner
 
     private function smallSignatureTextPattern()
     {
-        return '\p{Lu}[\p{Ll}\p{M}\'-]{1,40}\s+\p{Lu}[\p{Lu}\p{M}\'-]{1,40}\s*\|\s*[^|\r\n]{2,80}\s*\|\s*T:\s*\+?\d[\d\s().-]{5,30}';
+        $phone = $this->signaturePhonePattern();
+
+        return '\p{Lu}[\p{Ll}\p{M}\'-]{1,40}\s+\p{Lu}[\p{Lu}\p{M}\'-]{1,40}\s*\|\s*[^|\r\n]{2,80}\s*\|\s*T:\s*'
+            . $phone
+            . '(?:\s*\|\s*M:\s*' . $phone . ')?';
     }
 
     private function smallSignatureHtmlTextPattern()
     {
-        return '\p{Lu}[\p{Ll}\p{M}&#;\'-]{1,80}\s+\p{Lu}[\p{Lu}\p{M}&#;\'-]{1,80}\s*\|\s*[^|<]{2,100}\s*\|\s*T:\s*\+?\d[\d\s().-]{5,30}';
+        $phone = $this->signaturePhonePattern();
+
+        return '\p{Lu}[\p{Ll}\p{M}&#;\'-]{1,80}\s+\p{Lu}[\p{Lu}\p{M}&#;\'-]{1,80}\s*\|\s*[^|<]{2,100}\s*\|\s*T:\s*'
+            . $phone
+            . '(?:\s*\|\s*M:\s*' . $phone . ')?';
+    }
+
+    private function signaturePhonePattern()
+    {
+        return '\+?\d[\d\s().-]{5,30}(?:\s*\((?i:Ext)\.?\s*\d{1,10}\))?';
     }
 
     private function isSmallSignatureHtmlNode(\DOMElement $node)
