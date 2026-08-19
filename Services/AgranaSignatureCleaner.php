@@ -126,7 +126,7 @@ class AgranaSignatureCleaner
             }
         }
 
-        $disclaimers = $xpath->query('//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "disclaimer: this message contains confidential information")]');
+        $disclaimers = $xpath->query('//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "this message contains confidential information")]');
 
         foreach ($disclaimers as $disclaimer) {
             if (!$disclaimer instanceof \DOMElement) {
@@ -212,7 +212,7 @@ class AgranaSignatureCleaner
         $pattern = '/<table\b[^>]*>(?:(?!<\/table>).)*AGRANA Fruit Moscow region LLC(?:(?!<\/table>).)*<\/table>/isu';
         $html = preg_replace($pattern, '', $html);
 
-        $disclaimerPattern = '/<p\b[^>]*>.*?Disclaimer:\s*This message contains confidential information.*?AGRANA Fruit Moscow region.*?<\/p>/isu';
+        $disclaimerPattern = '/<p\b[^>]*>.*?(?:Disclaimer:\s*)?This message contains confidential information.*?AGRANA Fruit Moscow region.*?<\/p>/isu';
         $html = preg_replace($disclaimerPattern, '', $html);
 
         $bannerPattern = '/<p\b[^>]*>.*?Agrana Fruit in Fashion Banner.*?<\/p>/isu';
@@ -312,18 +312,32 @@ class AgranaSignatureCleaner
         }
 
         $start = $companyLineIndex;
+        $separatorFound = false;
 
-        for ($i = $companyLineIndex - 1; $i >= max(0, $companyLineIndex - 4); $i--) {
-            $line = trim($lines[$i]);
-
-            if ($line === '') {
+        // The current Outlook signature starts with a long underscore divider
+        // and places the employee block more than four lines above the company.
+        for ($i = $companyLineIndex - 1; $i >= max(0, $companyLineIndex - 20); $i--) {
+            if (preg_match('/^_{5,}$/u', trim($lines[$i])) === 1) {
                 $start = $i;
-                continue;
-            }
-
-            if (preg_match('/^[A-ZА-ЯЁ][a-zа-яё]+ [A-ZА-ЯЁ]{2,}\s*\|/u', $line)) {
-                $start = $i;
+                $separatorFound = true;
                 break;
+            }
+        }
+
+        // Keep support for the previous compact "Name | Role | T: ..." format.
+        if (!$separatorFound) {
+            for ($i = $companyLineIndex - 1; $i >= max(0, $companyLineIndex - 4); $i--) {
+                $line = trim($lines[$i]);
+
+                if ($line === '') {
+                    $start = $i;
+                    continue;
+                }
+
+                if (preg_match('/^[A-ZА-ЯЁ][a-zа-яё]+ [A-ZА-ЯЁ]{2,}\s*\|/u', $line)) {
+                    $start = $i;
+                    break;
+                }
             }
         }
 
@@ -366,12 +380,25 @@ class AgranaSignatureCleaner
 
     private function smallSignatureTextPattern()
     {
-        return '\p{Lu}[\p{Ll}\p{M}\'-]{1,40}\s+\p{Lu}[\p{Lu}\p{M}\'-]{1,40}\s*\|\s*[^|\r\n]{2,80}\s*\|\s*T:\s*\+?\d[\d\s().-]{5,30}';
+        $phone = $this->signaturePhonePattern();
+
+        return '\p{Lu}[\p{Ll}\p{M}\'-]{1,40}\s+\p{Lu}[\p{Lu}\p{M}\'-]{1,40}\s*\|\s*[^|\r\n]{2,80}\s*\|\s*T:\s*'
+            . $phone
+            . '(?:\s*\|\s*M:\s*' . $phone . ')?';
     }
 
     private function smallSignatureHtmlTextPattern()
     {
-        return '\p{Lu}[\p{Ll}\p{M}&#;\'-]{1,80}\s+\p{Lu}[\p{Lu}\p{M}&#;\'-]{1,80}\s*\|\s*[^|<]{2,100}\s*\|\s*T:\s*\+?\d[\d\s().-]{5,30}';
+        $phone = $this->signaturePhonePattern();
+
+        return '\p{Lu}[\p{Ll}\p{M}&#;\'-]{1,80}\s+\p{Lu}[\p{Lu}\p{M}&#;\'-]{1,80}\s*\|\s*[^|<]{2,100}\s*\|\s*T:\s*'
+            . $phone
+            . '(?:\s*\|\s*M:\s*' . $phone . ')?';
+    }
+
+    private function signaturePhonePattern()
+    {
+        return '\+?\d[\d\s().-]{5,30}(?:\s*\((?i:Ext)\.?\s*\d{1,10}\))?';
     }
 
     private function isSmallSignatureHtmlNode(\DOMElement $node)
@@ -413,7 +440,7 @@ class AgranaSignatureCleaner
     {
         $text = $this->normalizeText($node->textContent);
 
-        return preg_match('/^Disclaimer:\s*This message contains confidential information/iu', $text) === 1
+        return preg_match('/^(?:Disclaimer:\s*)?This message contains confidential information/iu', $text) === 1
             && $this->contains($text, 'AGRANA Fruit Moscow region');
     }
 
