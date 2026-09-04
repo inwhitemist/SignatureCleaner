@@ -26,6 +26,20 @@ class SignatureCleanerServiceProvider extends ServiceProvider
 
             return $data;
         }, 20, 1);
+
+        \Eventy::addFilter('fetch_emails.should_save_thread', function ($shouldSave, $data) {
+            if ($shouldSave === false || !is_array($data)) {
+                return $shouldSave;
+            }
+
+            $cleaner = app(AgranaSignatureCleaner::class);
+
+            if ($cleaner->isReactionNotification($data['body'] ?? '', $data['subject'] ?? '')) {
+                return false;
+            }
+
+            return $shouldSave;
+        }, 20, 2);
     }
 
     public function register()

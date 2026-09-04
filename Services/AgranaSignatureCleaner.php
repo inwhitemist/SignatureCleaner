@@ -17,6 +17,33 @@ class AgranaSignatureCleaner
         return $this->cleanPlainText($body);
     }
 
+    public function isReactionNotification($body, $subject = '')
+    {
+        if (!is_string($body) && !is_string($subject)) {
+            return false;
+        }
+
+        $subjectText = $this->normalizeText((string) $subject);
+
+        if ($this->hasReactionNotificationHeading($subjectText, true)) {
+            return true;
+        }
+
+        $bodyText = $this->htmlToText((string) $body);
+
+        return $this->hasReactionNotificationHeading($bodyText, false);
+    }
+
+    private function hasReactionNotificationHeading($text, $wholeText)
+    {
+        $ending = $wholeText ? '\s*$' : '';
+
+        return preg_match(
+            '/^\p{Lu}[\p{L}\p{M}\'-]*(?:\s+\p{Lu}[\p{L}\p{M}\'-]*){1,3}\s+reacted to your message\s*:?' . $ending . '/u',
+            $text
+        ) === 1;
+    }
+
     private function looksLikeHtml($body)
     {
         return preg_match('/<\s*(html|body|div|table|p|br|span|a|img)\b/i', $body) === 1;
@@ -26,7 +53,6 @@ class AgranaSignatureCleaner
     {
         $original = $html;
         $signatureRemoved = false;
-
         $previous = libxml_use_internal_errors(true);
 
         $dom = new \DOMDocument('1.0', 'UTF-8');
@@ -109,6 +135,25 @@ class AgranaSignatureCleaner
                 $this->appendAdjacentSignatureNodes($nodesToRemove, $table);
             }
         }
+
+        // Some Outlook signatures are a group of sibling paragraphs and small
+        // layout tables instead of one table. Remove their common wrapper when
+        // it starts with a person's name and contains the full contact block.
+        $containers = $xpath->query('//div|//section');
+
+        foreach ($containers as $container) {
+            if (!$container instanceof \DOMElement) {
+                continue;
+            }
+
+            if ($this->looksLikeExpandedAgranaSignatureText($this->htmlToText($this->nodeHtml($container)))) {
+                $nodesToRemove[] = $container;
+                $this->appendAdjacentSignatureNodes($nodesToRemove, $container);
+                $this->appendPreviousSignatureSeparator($nodesToRemove, $container);
+            }
+        }
+
+        $this->appendSplitAgranaSignatureNodes($nodesToRemove, $xpath);
 
         $imgs = $xpath->query('//img');
 
@@ -313,17 +358,32 @@ class AgranaSignatureCleaner
 
         $start = $companyLineIndex;
 
-        for ($i = $companyLineIndex - 1; $i >= max(0, $companyLineIndex - 4); $i--) {
-            $line = trim($lines[$i]);
-
-            if ($line === '') {
-                $start = $i;
+        for ($i = $companyLineIndex - 1; $i >= max(0, $companyLineIndex - 30); $i--) {
+            if (!$this->isSignatureNameText($lines[$i])) {
                 continue;
             }
 
-            if (preg_match('/^[A-ZА-ЯЁ][a-zа-яё]+ [A-ZА-ЯЁ]{2,}\s*\|/u', $line)) {
+            $candidate = implode("\n", array_slice($lines, $i));
+
+            if ($this->looksLikeExpandedAgranaSignatureText($candidate)) {
                 $start = $i;
                 break;
+            }
+        }
+
+        if ($start === $companyLineIndex) {
+            for ($i = $companyLineIndex - 1; $i >= max(0, $companyLineIndex - 4); $i--) {
+                $line = trim($lines[$i]);
+
+                if ($line === '') {
+                    $start = $i;
+                    continue;
+                }
+
+                if (preg_match('/^[A-ZА-ЯЁ][a-zа-яё]+ [A-ZА-ЯЁ]{2,}\s*\|/u', $line)) {
+                    $start = $i;
+                    break;
+                }
             }
         }
 
@@ -355,6 +415,23 @@ class AgranaSignatureCleaner
         }
 
         return $score >= 4;
+    }
+
+    private function looksLikeExpandedAgranaSignatureText($text)
+    {
+        $text = $this->normalizeText($text);
+
+        return $this->isSignatureNameText($text)
+            && $this->isAgranaSignatureText($text)
+            && preg_match('/[\p{L}\d._%+\'-]+@agrana\.com/iu', $text) === 1
+            && preg_match('/\+\d[\d\s().-]{5,}/u', $text) === 1;
+    }
+
+    private function isSignatureNameText($text)
+    {
+        $text = $this->normalizeText($text);
+
+        return preg_match('/^\p{Lu}[\p{Ll}\p{M}\'-]{1,40}\s+\p{Lu}[\p{Lu}\p{M}\'-]{1,40}(?:\s|$)/u', $text) === 1;
     }
 
     private function isSmallSignatureText($text)
@@ -539,6 +616,118 @@ class AgranaSignatureCleaner
         }
     }
 
+    private function appendSplitAgranaSignatureNodes(array &$nodesToRemove, \DOMXPath $xpath)
+    {
+        $companyNodes = $xpath->query('//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "agrana fruit moscow region llc")]');
+
+        foreach ($companyNodes as $companyNode) {
+            if (!$companyNode instanceof \DOMElement || $this->hasCompanyMarkerElementChild($companyNode)) {
+                continue;
+            }
+
+            $current = $this->closestBlock($companyNode);
+
+            for ($level = 0; $current instanceof \DOMElement && $level < 6; $level++) {
+                $parent = $current->parentNode;
+
+                if (!$parent instanceof \DOMNode) {
+                    break;
+                }
+
+                $siblings = [];
+
+                foreach ($parent->childNodes as $child) {
+                    if ($child instanceof \DOMElement) {
+                        $siblings[] = $child;
+                    }
+                }
+
+                $companyIndex = array_search($current, $siblings, true);
+
+                if ($companyIndex !== false) {
+                    $startLimit = max(0, $companyIndex - 20);
+
+                    for ($start = $companyIndex; $start >= $startLimit; $start--) {
+                        if (!$this->isSignatureNameText($siblings[$start]->textContent)) {
+                            continue;
+                        }
+
+                        $end = $companyIndex;
+                        $endLimit = min(count($siblings) - 1, $companyIndex + 10);
+
+                        for ($i = $companyIndex; $i <= $endLimit; $i++) {
+                            $siblingText = $this->normalizeText($siblings[$i]->textContent);
+
+                            if ($this->isAgranaSignatureTailText($siblingText)) {
+                                $end = $i;
+                            }
+
+                            if ($this->contains($siblingText, 'Privacy Principles')) {
+                                break;
+                            }
+                        }
+
+                        $parts = [];
+
+                        for ($i = $start; $i <= $end; $i++) {
+                            $parts[] = $this->nodeHtml($siblings[$i]);
+                        }
+
+                        if (!$this->looksLikeExpandedAgranaSignatureText($this->htmlToText(implode("\n", $parts)))) {
+                            continue;
+                        }
+
+                        for ($i = $start; $i <= $end; $i++) {
+                            $nodesToRemove[] = $siblings[$i];
+                        }
+
+                        $this->appendPreviousSignatureSeparator($nodesToRemove, $siblings[$start]);
+                        break 2;
+                    }
+                }
+
+                $tag = strtolower($current->tagName);
+
+                if (in_array($tag, ['html', 'body'], true) || !$parent instanceof \DOMElement) {
+                    break;
+                }
+
+                $current = $parent;
+            }
+        }
+    }
+
+    private function hasCompanyMarkerElementChild(\DOMElement $node)
+    {
+        foreach ($node->childNodes as $child) {
+            if ($child instanceof \DOMElement && $this->contains($child->textContent, 'AGRANA Fruit Moscow region LLC')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isAgranaSignatureTailText($text)
+    {
+        $markers = [
+            'AGRANA Fruit Moscow region LLC',
+            'Festivalnaya street',
+            'Serpukhov',
+            'agrana.com',
+            'Privacy Principles',
+            'Agrana Fruit in Fashion Banner',
+        ];
+
+        foreach ($markers as $marker) {
+            if ($this->contains($text, $marker)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function appendPreviousSignatureSeparator(array &$nodesToRemove, \DOMNode $signatureNode)
     {
         $separator = $this->previousElementSibling($signatureNode);
@@ -717,6 +906,15 @@ class AgranaSignatureCleaner
         $text = preg_replace('/\R+/u', "\n", $text);
 
         return trim($text);
+    }
+
+    private function htmlToText($html)
+    {
+        $text = preg_replace('/<\s*(?:head|style|script)\b[^>]*>.*?<\/\s*(?:head|style|script)\s*>/isu', '', $html);
+        $text = preg_replace('/<\s*br\b[^>]*>/iu', "\n", $text);
+        $text = preg_replace('/<\/\s*(?:p|div|tr|td|li)\s*>/iu', "\n", $text);
+
+        return $this->normalizeText(strip_tags($text));
     }
 
     private function contains($haystack, $needle)
