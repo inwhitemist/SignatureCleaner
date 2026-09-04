@@ -158,12 +158,7 @@ class AgranaSignatureCleaner
         $imgs = $xpath->query('//img');
 
         foreach ($imgs as $img) {
-            $alt = $img->getAttribute('alt');
-            $src = $img->getAttribute('src');
-
-            if ($this->contains($alt, 'Agrana Fruit in Fashion Banner') ||
-                $this->contains($src, 'image006') ||
-                $this->contains($src, 'agrana')) {
+            if ($img instanceof \DOMElement && $this->isAgranaSignatureImage($img)) {
                 $bannerContainer = $this->closestBlock($img);
                 if ($bannerContainer) {
                     $nodesToRemove[] = $bannerContainer;
